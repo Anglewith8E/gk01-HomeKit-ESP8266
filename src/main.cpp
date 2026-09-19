@@ -3,7 +3,7 @@
  *
  * 硬件 (引脚来自 summmer121/gk01-ir-receiver-launch 拆机确认):
  *   主控: ESP12F (ESP8266) / 红外接收 GPIO5 / 红外发射 GPIO14
- *   红灯 GPIO12 (发送) / 黄灯 GPIO13 (接收) / 按键 GPIO16 (下拉, 按下=高)
+ *   红灯 GPIO12 (发送) / 黄灯 GPIO13 (接收) / 按键 GPIO0 (上拉, 按下=低)
  *
  * 功能:
  *   1. 原生 HomeKit: 无需任何网桥, 直接添加到苹果"家庭"App
@@ -39,8 +39,9 @@ static IRrecv irrecv(PIN_IR_RECV, IR_CAPTURE_BUFFER);
 static IRsend irsend(PIN_IR_SEND);
 static decode_results results;
 
-// IRremoteESP8266 采集缓冲每个 tick = 50us
-static const uint16_t US_PER_TICK = 50;
+// IRremoteESP8266 v2.8.x: rawbuf 以边沿中断采集, 每个单位 = 2µs (库常量 kRawTick)
+// 注意: 不能用老版本的 50µs/tick, 否则时序被放大 25 倍且 uint16 溢出回绕
+static const uint16_t US_PER_TICK = kRawTick;  // = 2
 
 struct IrCode {
 	uint16_t count;                       // 定时机数量 (微秒)
@@ -212,6 +213,11 @@ static void matchNotify() {
 
 static void handleIrCapture() {
 	if (results.rawlen < 3) { irrecv.resume(); return; }
+	if (results.overflow) {
+		LOG_D("红外采集缓冲溢出, 码不完整!");
+		irrecv.resume();
+		return;
+	}
 	// 忽略 NEC 重复码 (长按音量键等)
 	if (results.decode_type == NEC && results.value == 0xFFFFFFFFULL) {
 		irrecv.resume();
@@ -231,6 +237,9 @@ static void handleIrCapture() {
 		irbuf.value = 0;
 	}
 	irrecv.resume();
+	LOG_D("采集: 协议=%d 边沿数=%d 前4段=%d,%d,%d,%d us",
+	      (int)results.decode_type, n,
+	      irbuf.us[0], irbuf.us[1], irbuf.us[2], irbuf.us[3]);
 
 	if (learn_mode) learnStore();
 	else            matchNotify();
@@ -249,9 +258,17 @@ static void sendSlotNow(int slot) {
 	irrecv.disableIRIn();          // 发射期间暂停接收, 避免收到自己
 	ledRed(true);
 	irsend.sendRaw(irbuf.us, irbuf.count, IR_FREQ);
+	// 空调类长帧 (Midea/COOLIX 等多块状态帧): 原装遥控器会连发两遍,
+	// 部分空调只响应第二遍; 状态帧重复发送是幂等的, 安全
+	if (irbuf.count >= 150) {
+		delay(65);
+		irsend.sendRaw(irbuf.us, irbuf.count, IR_FREQ);
+	}
 	ledRed(false);
 	irrecv.enableIRIn();
-	LOG_D("已发射 \"%s\" (%d 定时机)", slot_name[slot], irbuf.count);
+	LOG_D("已发射 \"%s\" (%d 边沿%s, 前4段=%d,%d,%d,%d us)",
+	      slot_name[slot], irbuf.count, irbuf.count >= 150 ? ", 连发x2" : "",
+	      irbuf.us[0], irbuf.us[1], irbuf.us[2], irbuf.us[3]);
 }
 
 // ============================================================
@@ -274,8 +291,9 @@ static void toggleLearnFromButton() {
 }
 
 // ============================================================
-//  实体按键 (GPIO16, 按下 = 高)
-//  短按: 切换学习模式 / 长按 10s: 恢复出厂
+//  实体按键 (GPIO0, 板载上拉, 按下 = 低)
+//  短按: 切换学习模式 / 长按 10s: 恢复出厂 (按住 3s 起红灯快闪警告)
+//  注意: GPIO0 兼作启动模式引脚, 上电瞬间按住会进入下载模式 (刷机正好用)
 // ============================================================
 static void factoryReset() {
 	LOG_D("恢复出厂: 清除红外码 + HomeKit 配对 + WiFi 配置");
@@ -288,17 +306,27 @@ static void factoryReset() {
 }
 
 static void pollButton() {
-	bool pressed = digitalRead(PIN_BUTTON) == HIGH;
+	bool pressed = digitalRead(PIN_BUTTON) == (BUTTON_ACTIVE_HIGH ? HIGH : LOW);
 	if (pressed && !btnState) {
 		btnState = true;
 		btnDownMs = millis();
 		longFired = false;
-	} else if (pressed && btnState && !longFired
-	           && millis() - btnDownMs > BUTTON_LONGPRESS_MS) {
-		longFired = true;
-		factoryReset();
+		LOG_D("实体按键按下 (GPIO%d)", PIN_BUTTON);
+	} else if (pressed && btnState && !longFired) {
+		uint32_t held = millis() - btnDownMs;
+		// 按住 3 秒后红灯快闪 = 恢复出厂倒计时警告; 10 秒真正触发
+		if (held > 3000) {
+			ledRed((millis() / 120) & 1);
+			if (held > BUTTON_LONGPRESS_MS) {
+				longFired = true;
+				ledRed(false);
+				factoryReset();
+			}
+		}
 	} else if (!pressed && btnState) {
 		btnState = false;
+		ledRed(false);
+		LOG_D("实体按键松开 (GPIO%d)", PIN_BUTTON);
 		if (!longFired && millis() - btnDownMs > 50) {
 			toggleLearnFromButton();
 		}
@@ -331,7 +359,7 @@ void setup() {
 	pinMode(PIN_LED_RED, OUTPUT);
 	pinMode(PIN_LED_YELLOW, OUTPUT);
 	ledRed(false); ledYellow(false);
-	pinMode(PIN_BUTTON, INPUT_PULLDOWN_16);
+	pinMode(PIN_BUTTON, INPUT_PULLUP);   // GPIO0: 板载上拉, 按下 = 低
 
 	irsend.begin();
 	if (!LittleFS.begin()) {

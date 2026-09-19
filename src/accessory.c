@@ -22,8 +22,8 @@
 
 #include "config.h"
 
-#if MAX_BUTTONS != 6
-#error "当前 accessory.c 按 6 个按键编写, 如需修改请同步调整宏展开部分"
+#if MAX_BUTTONS > 12
+#error "当前 accessory.c 最多编写了 12 个按键的宏展开, 请同步扩充"
 #endif
 
 // ---- main.cpp 中实现的桥接函数 ----
@@ -51,6 +51,12 @@ DEF_BTN_SETTER(3)
 DEF_BTN_SETTER(4)
 DEF_BTN_SETTER(5)
 DEF_BTN_SETTER(6)
+DEF_BTN_SETTER(7)
+DEF_BTN_SETTER(8)
+DEF_BTN_SETTER(9)
+DEF_BTN_SETTER(10)
+DEF_BTN_SETTER(11)
+DEF_BTN_SETTER(12)
 
 // ---- 按键特征 ----
 #define DEF_BTN_CHA(n) \
@@ -63,18 +69,28 @@ DEF_BTN_CHA(3)
 DEF_BTN_CHA(4)
 DEF_BTN_CHA(5)
 DEF_BTN_CHA(6)
+DEF_BTN_CHA(7)
+DEF_BTN_CHA(8)
+DEF_BTN_CHA(9)
+DEF_BTN_CHA(10)
+DEF_BTN_CHA(11)
+DEF_BTN_CHA(12)
 
 #define BTN_NAME_PTR(n) &cha_btn_name_##n
 #define BTN_ON_PTR(n)   &cha_btn_on_##n
 
 homekit_characteristic_t *cha_btn_name[MAX_BUTTONS] = {
 	BTN_NAME_PTR(1), BTN_NAME_PTR(2), BTN_NAME_PTR(3),
-	BTN_NAME_PTR(4), BTN_NAME_PTR(5), BTN_NAME_PTR(6)
+	BTN_NAME_PTR(4), BTN_NAME_PTR(5), BTN_NAME_PTR(6),
+	BTN_NAME_PTR(7), BTN_NAME_PTR(8), BTN_NAME_PTR(9),
+	BTN_NAME_PTR(10), BTN_NAME_PTR(11), BTN_NAME_PTR(12)
 };
 
 homekit_characteristic_t *cha_btn_on[MAX_BUTTONS] = {
 	BTN_ON_PTR(1), BTN_ON_PTR(2), BTN_ON_PTR(3),
-	BTN_ON_PTR(4), BTN_ON_PTR(5), BTN_ON_PTR(6)
+	BTN_ON_PTR(4), BTN_ON_PTR(5), BTN_ON_PTR(6),
+	BTN_ON_PTR(7), BTN_ON_PTR(8), BTN_ON_PTR(9),
+	BTN_ON_PTR(10), BTN_ON_PTR(11), BTN_ON_PTR(12)
 };
 
 #define BTN_SERVICE(n) \
@@ -104,6 +120,12 @@ homekit_accessory_t *accessories[] = {
 		BTN_SERVICE(4),
 		BTN_SERVICE(5),
 		BTN_SERVICE(6),
+		BTN_SERVICE(7),
+		BTN_SERVICE(8),
+		BTN_SERVICE(9),
+		BTN_SERVICE(10),
+		BTN_SERVICE(11),
+		BTN_SERVICE(12),
 		NULL
 	}),
 	NULL
