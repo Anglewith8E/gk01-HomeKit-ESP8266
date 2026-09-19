@@ -56,6 +56,12 @@ static bool     slot_used[MAX_BUTTONS];
 static int16_t  key_type[MAX_BUTTONS];    // 收到红外码时的匹配键
 static uint64_t key_value[MAX_BUTTONS];
 
+// RAW 时序指纹缓存: 开机从槽位文件计算, 用于 UNKNOWN/解码不稳定码的相似度匹配
+#define FP_EDGES 48
+static uint16_t key_fp[MAX_BUTTONS][FP_EDGES];
+static uint16_t key_fpcnt[MAX_BUTTONS];
+static uint16_t key_total[MAX_BUTTONS];
+
 static bool     learn_mode = false;
 static uint32_t switchOffAt[MAX_BUTTONS]; // "按键N"回弹时间戳
 static uint32_t nextHeapLog = 0;
@@ -156,11 +162,17 @@ static void loadAllSlots() {
 		slot_used[i] = false;
 		key_type[i]  = -1;
 		key_value[i] = 0;
+		key_fpcnt[i] = 0;
+		key_total[i] = 0;
 		if (!LittleFS.exists(slotPath(i))) continue;
 		if (!loadSlotCode(i)) continue;
 		slot_used[i] = true;
 		key_type[i]  = irbuf.dtype;
 		key_value[i] = irbuf.value;
+		uint16_t n = irbuf.count < FP_EDGES ? irbuf.count : FP_EDGES;
+		for (uint16_t j = 0; j < n; j++) key_fp[i][j] = irbuf.us[j];
+		key_fpcnt[i] = n;
+		key_total[i] = irbuf.count;
 		LOG_D("槽位 %d: %s (协议=%d)", i + 1, slot_name[i], key_type[i]);
 	}
 }
@@ -190,6 +202,10 @@ static void learnStore() {
 	slot_used[slot] = true;
 	key_type[slot]  = irbuf.dtype;
 	key_value[slot] = irbuf.value;
+	uint16_t n = irbuf.count < FP_EDGES ? irbuf.count : FP_EDGES;
+	for (uint16_t j = 0; j < n; j++) key_fp[slot][j] = irbuf.us[j];
+	key_fpcnt[slot] = n;
+	key_total[slot] = irbuf.count;
 	hk_set_button_name(slot, slot_name[slot]);
 
 	learn_mode = false;
@@ -199,11 +215,39 @@ static void learnStore() {
 	pulseYellow();
 }
 
+// RAW 时序相似度判断: 与槽位指纹逐边沿比对 (容差 20%/最小150µs, ≥90% 吻合)
+static bool rawSimilar(int slot) {
+	int16_t diff = (int16_t)irbuf.count - (int16_t)key_total[slot];
+	if (diff < -4 || diff > 4) return false;                 // 总边沿数须接近
+	uint16_t n = irbuf.count < key_fpcnt[slot] ? irbuf.count : key_fpcnt[slot];
+	if (n == 0) return false;
+	uint16_t ok = 0;
+	for (uint16_t i = 0; i < n; i++) {
+		uint16_t a = irbuf.us[i], b = key_fp[slot][i];
+		uint16_t tol = (a > b ? a : b) / 5;                  // 20%
+		if (tol < 150) tol = 150;
+		uint16_t d = a > b ? a - b : b - a;
+		if (d <= tol) ok++;
+	}
+	return ok * 10 >= n * 9;
+}
+
 static void matchNotify() {
-	if (irbuf.dtype < 0) return;   // 未识别协议的原始码不做匹配
+	// 1) 可解码协议: 精确匹配协议号 + 解码值
+	if (irbuf.dtype >= 0) {
+		for (int i = 0; i < MAX_BUTTONS; i++) {
+			if (slot_used[i] && key_type[i] == irbuf.dtype && key_value[i] == irbuf.value) {
+				LOG_D("收到已学码, 触发\"%s\"", slot_name[i]);
+				hk_notify_button_on(i);
+				switchOffAt[i] = millis() + 600;
+				return;
+			}
+		}
+	}
+	// 2) 兜底: RAW 时序相似度匹配 (UNKNOWN 码/解码不稳定的协议也能触发反向联动)
 	for (int i = 0; i < MAX_BUTTONS; i++) {
-		if (slot_used[i] && key_type[i] == irbuf.dtype && key_value[i] == irbuf.value) {
-			LOG_D("收到已学码, 触发\"%s\"", slot_name[i]);
+		if (slot_used[i] && rawSimilar(i)) {
+			LOG_D("收到已学码(时序匹配), 触发\"%s\"", slot_name[i]);
 			hk_notify_button_on(i);
 			switchOffAt[i] = millis() + 600;
 			return;
