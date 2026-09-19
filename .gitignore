@@ -1,0 +1,5 @@
+# PlatformIO 编译产物
+.pio/
+# 系统文件
+Thumbs.db
+.DS_Store
